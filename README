@@ -1,0 +1,237 @@
+# Ultrarapid long-read genome analysis pipeline
+
+A GPU-enabled Snakemake workflow for rapid germline variant calling, annotation, prioritization, and interactive review from Oxford Nanopore whole-genome sequencing data.
+
+The pipeline jointly analyzes:
+
+- SNVs and small indels with Clair3
+- Structural variants with Sniffles2
+- Large copy-number variants using mosdepth and CNVkit
+- Joint SNV/SV phasing and BAM haplotagging with LongPhase
+- Variant annotation using offline VEP, ClinVar, gnomAD, MANE, SVAFotate, DGV, and dosage-sensitivity resources
+- Candidate prioritization for rare-disease analysis
+- Interactive IGV.js reports for SNVs/indels, SVs, and CNVs
+- A combined tabbed HTML report containing all candidate variant classes
+
+## Workflow overview
+
+| Stage | Software | Output |
+|---|---|---|
+| Optional BAM merge | samtools | Merged and indexed BAM |
+| SNV/indel calling | Clair3 | PASS small-variant VCF |
+| SV calling | Sniffles2 | Sorted and indexed SV VCF |
+| CNV calling | mosdepth + CNVkit | Large autosomal CNV calls and 5-kb coverage track |
+| Joint phasing | LongPhase | Phased SNV and SV VCFs |
+| Haplotagging | LongPhase | HP-tagged BAM |
+| SNV annotation | VEP + bcftools | ClinVar, gnomAD, MANE, OMIM phenotype, consequence, and homopolymer annotations |
+| SV annotation | SVAFotate + VEP + MANE CDS | Population frequency, gene, phenotype, and coding-region annotations |
+| Prioritization | Bundled Python scripts | Candidate TSV files |
+| Visualization | igv-reports | Interactive HTML reports |
+| Final report | Bundled Python script | Combined SNV/indel, SV, and CNV report |
+
+## Candidate prioritization
+
+The bundled scripts prioritize variants into compact candidate tables intended for rapid rare-disease review.
+
+### SNVs and indels
+
+Prioritization incorporates:
+
+- ClinVar pathogenic or likely pathogenic classifications
+- gnomAD maximum population allele frequency
+- VEP impact and consequence
+- Disease-gene membership
+- MANE transcripts
+- MIM morbid phenotypes
+- ONT homopolymer-associated indel filtering
+- Genotype, depth, VAF, quality, and phasing information
+
+### Structural variants
+
+Prioritization incorporates:
+
+- Type-compatible overlap with pathogenic ClinVar SVs
+- Long-read and short-read population allele frequencies
+- MANE CDS overlap
+- Disease-gene membership
+- VEP consequence and phenotype annotation
+- Resolved DEL, DUP, INS, and INV calls
+
+Unresolved breakends are not prioritized.
+
+### Copy-number variants
+
+The CNV workflow targets conspicuous autosomal events of at least 50 kb. Calls must have at least 10 supporting bins and satisfy copy-number and log2-ratio thresholds.
+
+Prioritization incorporates:
+
+- Type-compatible overlap with pathogenic ClinVar CNVs
+- DGV Gold Standard population CNVs
+- Collins et al. haploinsufficiency and triplosensitivity scores
+- MANE Select CDS overlap
+- Patient/reference overlap fractions
+- Read-depth evidence from 5-kb coverage bins
+
+## Requirements
+
+- Linux
+- Snakemake
+- Conda, Mamba, or Micromamba
+- NVIDIA GPU and compatible CUDA driver for GPU-enabled Clair3 calling
+- Indexed GRCh38-aligned BAM input
+- External annotation bundle described below
+
+Three reproducible environments are supplied:
+
+- `envs/ultrarapid.yaml`
+- `envs/vep.yaml`
+- `envs/igvreport.yaml`
+
+Linux package lock files are also included for stricter environment reproduction.
+
+## Installation
+
+Clone the repository:
+
+```bash
+git clone https://github.com/tjense25/ultrarapid_pipeline.git
+cd ultrarapid_pipeline
+```
+
+Copy the example configuration:
+
+```bash
+cp example.config.yml config.yml
+```
+
+Edit `config.yml` for the sample and local reference paths.
+
+## Configuration
+
+Example:
+
+```yaml
+sample: "example"
+
+# Specify either bam or bam_dir.
+bam: "/path/to/example.merged.bam"
+# bam_dir: "/path/to/hourly_bam_directory"
+
+fasta: "/path/to/GRCh38_no_alt_plus_hs38d1.fa"
+annotation_dir: "/path/to/ultrarapid_report_annotations"
+
+pore_version: "r10"
+basecall_version: "sup"
+gpus: 4
+```
+
+### Input selection
+
+Use `bam` when the sample already has one coordinate-sorted BAM.
+
+Use `bam_dir` to recursively discover and merge multiple BAM files before analysis. Do not retain both options in the final configuration.
+
+### Clair3 model selection
+
+The workflow automatically selects a Clair3 model from the pore and basecalling configuration:
+
+| Pore | Basecalling | Clair3 model |
+|---|---|---|
+| R9 | HAC | `r941_prom_hac_g360+g422` |
+| R9 | SUP | `r941_prom_sup_g5014` |
+| R10 | HAC | `r1041_e82_400bps_hac_v500` |
+| R10 | SUP | `r1041_e82_400bps_sup_v500` |
+
+Set `gpus: 0` for CPU-only Clair3 execution.
+
+## Annotation bundle
+
+Large reference and annotation files are not stored in this repository. The configured `annotation_dir` must contain the expected resources, including:
+
+- GRCh38 reference and indexes
+- Clair3 model directories
+- VEP 116 cache and plugins
+- VEP Phenotypes plugin data
+- GIAB-derived homopolymer annotations
+- MANE Select CDS BED and MANE GTF
+- ClinVar pathogenic SV/CNV BED files
+- UWONT500 and core SVAFotate reference files
+- DGV Gold Standard CNVs
+- Collins et al. dosage-sensitivity scores
+- Prepared IGV annotation tracks
+- Default GenCC disease-gene list
+
+A custom disease-gene file can be supplied with:
+
+```yaml
+gene_list: "/path/to/one_gene_symbol_per_line.txt"
+```
+
+If omitted, the workflow uses:
+
+```text
+ANNOTATION_DIR/GenCC_DefinitiveStrong_genelist.txt
+```
+
+## Running the pipeline
+
+Run on a single high-performance node:
+
+```bash
+snakemake --snakefile Snakefile --configfile config.yml --use-conda --cores 224 --jobs 8 --rerun-incomplete --printshellcmds
+```
+
+Perform a dry run first:
+
+```bash
+snakemake --snakefile Snakefile --configfile config.yml --use-conda --cores 224 --jobs 8 --dry-run
+```
+
+`Snakefile_chunked` provides an alternative workflow for distributing chromosome-partitioned processing.
+
+## Primary outputs
+
+Outputs are written beneath the configured sample name:
+
+```text
+SAMPLE/
+├── merged_bam/
+├── clair3_out/
+├── sniffles/
+├── cnvkit/
+├── longphase/
+├── vep/
+├── sv_anno/
+├── benchmarks/
+└── candidates/
+```
+
+Important final files include:
+
+```text
+SAMPLE/candidates/SAMPLE.snv_indel.candidate_variants.tsv
+SAMPLE/candidates/SAMPLE.sv.candidate_variants.tsv
+SAMPLE/candidates/SAMPLE.cnv.candidate_variants.tsv
+SAMPLE/candidates/SAMPLE.all_candidate_variants.igv_report.html
+```
+
+The combined HTML report contains separate tabs for:
+
+1. SNVs and indels
+2. Structural variants
+3. Copy-number variants
+4. Filtering and tier definitions
+
+## Benchmarking
+
+Each major rule records runtime and resource-use information under:
+
+```text
+SAMPLE/benchmarks/
+```
+
+These files can be used to evaluate pipeline wall time and identify bottlenecks on different compute configurations.
+
+## Important notice
+
+This workflow is under active development and is intended for research and pipeline-evaluation use. Candidate prioritization does not constitute clinical variant classification. All reported candidates require expert review, read-level inspection, phenotype assessment, and appropriate orthogonal confirmation before clinical interpretation.
