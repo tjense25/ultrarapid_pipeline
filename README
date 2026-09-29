@@ -1,4 +1,5 @@
 # Ultrarapid long-read genome analysis pipeline
+(AI generated README)
 
 A GPU-enabled Snakemake workflow for rapid germline variant calling, annotation, prioritization, and interactive review from Oxford Nanopore whole-genome sequencing data.
 
