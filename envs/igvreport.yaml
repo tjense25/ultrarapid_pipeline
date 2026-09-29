@@ -1,0 +1,7 @@
+name: igvreport
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - igv-reports=1.16.0
+  - python=3.14.7

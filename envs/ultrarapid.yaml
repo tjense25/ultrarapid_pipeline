@@ -1,0 +1,22 @@
+name: ultrarapid
+
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  - python=3.11.16
+  - bcftools=1.24
+  - clair3=2.0.3
+  - cnvkit=0.9.14
+  - longphase=2.0.2
+  - minimap2=2.31
+  - mosdepth=0.3.14
+  - samtools=1.24
+  - sniffles=2.8.1
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - torch==2.5.1+cu121
+      - torchvision==0.20.1+cu121

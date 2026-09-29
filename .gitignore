@@ -1,0 +1,16 @@
+.snakemake/
+sample_input/
+pipeline_outs/
+config.yml
+benchmarks/
+logs/
+__pycache__/
+*.bam
+*.bai
+*.cram
+*.crai
+*.vcf.gz
+*.tbi
+*.csi
+*.html
+.DS_Store

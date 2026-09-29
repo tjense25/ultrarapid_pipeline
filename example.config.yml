@@ -1,0 +1,13 @@
+sample: "example" #sample name
+
+## SPECIFY one of the following: bam or bam_dir######
+bam_dir: "sample_input/example_sample" #directory where to look recursively for bams. All bams in child dirs will be merged 
+bam: "sample_input/example_sample/example.merged.bam" # if bams are already merged specify here (if bam is specified, snakemake will not perform merging step
+#####################################################
+
+
+fasta: "/projects/DGX_BASECALLING/ultrarapid_report_annotations/GRCh38_no_alt_plus_hs38d1.fa" #path to reference directory that sample is aligned to (should be GRCh38)
+annotation_dir: "/raid/projects/DGX_BASECALLING/ultrarapid_report_annotations" #download from ??? and extract with tar -xzv 
+pore_version: "r10" #should be in [r9,r10]
+basecall_version: "sup" #should be in ["hac","sup"]
+gpus: 4 #number of gpus to use for clair3 (will try to use cuda:0,1,..,{gpu-1}, set to 0 for cpu-only version)

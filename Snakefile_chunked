@@ -1,0 +1,130 @@
+import glob
+
+BAM_DIR = "1520_bam"
+REFERENCE=f"/projects/DGX_BASECALLING/reference/GRCh38_no_alt_plus_hs38d1.fa"
+chrom_chunks={}
+for line in open('chromosome_chunks.txt'):
+    chunk,chroms=line.strip().split("\t")
+    chrom_chunks[chunk]=chroms.replace(" ",",")
+chunks=list(chrom_chunks.keys())
+
+BAMS = sorted(glob.glob(f"{BAM_DIR}/*.bam"))
+
+rule all:
+    input:
+        expand("longphase/{chunk}.haplotagged.bam",chunk=chunks),
+        expand("vep/{chunk}.phased.vep.vcf.gz",chunk=chunks),
+        expand("sv_anno/{chunk}.phased_SV.svafotate.UWONT500.gnomad.vcf.gz",chunk=chunks)
+
+rule merge_bams:
+    input:
+        BAMS
+    output:
+        bam="merged.{chunk}.bam",
+        bai="merged.{chunk}.bam.bai"
+    threads: 48
+    conda: "clair3_gpu"
+    benchmark: "benchmarks/merge_{chunk}.tsv"
+    shell:
+        "samtools merge -@ {threads} -o {output.bam} {input} && samtools index -@ {threads} {output.bam}"
+
+rule clair3_gpu:
+    input:
+        bam="merged.{chunk}.bam",
+        ref=REFERENCE,
+    output:
+        vcf="clair3_out/{chunk}/merge_output.vcf.gz"
+    threads: 48
+    benchmark: "benchmarks/clair3_{chunk}.tsv"
+    conda: "clair3_gpu"
+    shell: 
+        "run_clair3.sh --bam_fn={input.bam} --ref_fn={input.ref} --threads={threads} --platform=ont --model_path=$CONDA_PREFIX/bin/models/r1041_e82_400bps_sup_v500 --output=clair3_out/{wildcards.chunk} --use_longphase_for_intermediate_phasing"
+
+rule sniffles:
+    input:
+        "merged.{chunk}.bam"
+    output:
+        "sniffles.{chunk}.vcf"
+    threads: 4
+    benchmark: "benchmarks/sniffles_{chunk}.tsv"
+    conda: "clair3_gpu"
+    shell: "sniffles --input {input} --vcf {output} --threads {threads} --minsupport 3 --minsvlen 30 --output-rnames --allow-overwrite"
+
+rule longphase:
+    input:
+        snv="clair3_out/{chunk}/merge_output.vcf.gz",
+        sv="sniffles.{chunk}.vcf",
+        bam="merged.{chunk}.bam",
+        ref=REFERENCE
+    output:
+        snv="longphase/{chunk}.phased.vcf.gz",
+        sv="longphase/{chunk}.phased_SV.vcf.gz"
+    threads: 16
+    benchmark: "benchmarks/longphase_{chunk}.tsv"
+    conda: "clair3_gpu"
+    shell: """ 
+        longphase phase -s {input.snv} --sv-file {input.sv} -b {input.bam} -r {input.ref} -t {threads} -o longphase/{wildcards.chunk}.phased --ont
+        bcftools sort -m 4G -Oz -o {output.snv} longphase/{wildcards.chunk}.phased.vcf
+        bcftools index --threads 32 --tbi {output.snv}
+        bcftools sort -m 4G -Oz -o {output.sv} longphase/{wildcards.chunk}.phased_SV.vcf
+        bcftools index --threads 32 --tbi {output.sv}
+        rm -f longphase/phased*.vcf #delete uncompressed vcfs
+    """
+
+rule haplotag:
+    input:
+        snv="longphase/{chunk}.phased.vcf.gz",
+        sv="longphase/{chunk}.phased_SV.vcf.gz",
+        bam="merged.{chunk}.bam",
+        ref=REFERENCE
+    output:
+        "longphase/{chunk}.haplotagged.bam"
+    threads: 16
+    benchmark: "benchmarks/haplotag_{chunk}.tsv"
+    conda: "clair3_gpu"
+    shell: 
+        "longphase haplotag -s {input.snv}  --sv-file {input.sv} -b {input.bam}  -r {input.ref}  -t {threads} -o longphase/{wildcards.chunk}.haplotagged --tagSupplementary && samtools index -@ {threads} {output}"
+
+rule vep_snv:
+    input:
+        snv="longphase/{chunk}.phased.vcf.gz"     
+    params:
+        cache="/raid/projects/DGX_BASECALLING/reference/VEP"
+    output:
+        "vep/{chunk}.phased.vep.vcf.gz"
+    threads: 32
+    benchmark: "benchmarks/vep_{chunk}.tsv"
+    conda: "vep"
+    shell: """ 
+        vep --input_file {input} --output_file {output} \
+          --format vcf --vcf --offline --compress_output bgzip --species homo_sapiens \
+          --assembly GRCh38 --cache --cache_version 116 --dir_cache {params.cache} \
+          --dir_plugins {params.cache}/Plugins --fork {threads} --buffer_size 20000 --symbol \
+          --mane --canonical --biotype --variant_class --pick_allele_gene \
+          --pick_order mane_select,mane_plus_clinical,canonical,appris,tsl,biotype,rank,length \
+          --check_existing --clin_sig_allele 1 --af_gnomade --af_gnomadg --max_af \
+          --plugin "Phenotypes,file={params.cache}/phenotypes_116_GRCh38.gff.gz,include_types=Gene,include_sources=MIM_morbid,phenotype_feature=1,id_match=1,cols=source&phenotype&id" \
+          --no_stats --force_overwrite
+        bcftools index --threads {threads} --tbi {output}
+    """
+
+rule svafotate:
+    input:
+        "longphase/{chunk}.phased_SV.vcf.gz"
+    params:
+        ont_ref="/projects/DGX_BASECALLING/aligned/UWONT_500_ONT.svafotate.bed.gz",
+        core_ref="/projects/DGX_BASECALLING/aligned/SVAFotate_core_SV_popAFs.GRCh38.bed.gz"
+    output:
+        "sv_anno/{chunk}.phased_SV.svafotate.UWONT500.gnomad.vcf.gz"
+    threads: 16
+    benchmark: "benchmarks/svafotate_{chunk}.tsv"
+    conda: "vep"
+    shell: """ 
+        svafotate annotate -v {input} -b {params.ont_ref} -o tmp.{wildcards.chunk}.ontanno.vcf -f 0.5 --cpu {threads}
+        sed -i -e 's/Max_AF/ONT_AF/' -e 's/Max_Het/ONT_Het/' -e 's/Max_HomAlt/ONT_HomAlt/' tmp.{wildcards.chunk}.ontanno.vcf
+        svafotate annotate -v tmp.{wildcards.chunk}.ontanno.vcf -b {params.core_ref} -o sv_anno/{wildcards.chunk}.phased_SV.svafotate.UWONT500.gnomad.vcf -f 0.5 --cpu {threads} 
+        bcftools sort -m 2G -Oz -o {output} sv_anno/{wildcards.chunk}.phased_SV.svafotate.UWONT500.gnomad.vcf
+        bcftools index --threads {threads} --tbi {output}
+        rm -f tmp.{wildcards.chunk}.ontanno.vcf
+    """
+        

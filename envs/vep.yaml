@@ -1,0 +1,15 @@
+name: vep
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bcftools=1.24
+  - ensembl-vep=116.2
+  - python=3.11.9
+  - pip
+  - pip:
+      - svafotate==0.1.0
+      - numpy==2.4.6
+      - pandas==2.3.3
+      - pyranges==0.1.4
+      - ncls==0.0.70
