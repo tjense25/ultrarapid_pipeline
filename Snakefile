@@ -27,8 +27,8 @@ print("Using %s gene list for variant prioritization" % GENE_LIST)
 
 rule all:
     input:
-        expand("{sample}/candidates/{sample}.cnv.candidate_variants.igv_report.no_snvs.html",sample=SAMPLE),
-        expand("{sample}/candidates/{sample}.all_candidate_variants.igv_report.html",sample=SAMPLE)
+        expand("{sample}/merged_bam/{sample}.merged.bam",sample=SAMPLE),
+        #expand("{sample}/candidates/{sample}.all_candidate_variants.igv_report.html",sample=SAMPLE)
 
 rule merge_bams:
     input:

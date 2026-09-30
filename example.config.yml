@@ -11,3 +11,4 @@ annotation_dir: "/raid/projects/DGX_BASECALLING/ultrarapid_report_annotations" #
 pore_version: "r10" #should be in [r9,r10]
 basecall_version: "sup" #should be in ["hac","sup"]
 gpus: 4 #number of gpus to use for clair3 (will try to use cuda:0,1,..,{gpu-1}, set to 0 for cpu-only version)
+chrom_chunk: "/chromosome_chunks.4chunks.txt"

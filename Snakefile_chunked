@@ -21,14 +21,14 @@ CHUNK_FILE=config['chrom_chunk']
 for line in open(CHUNK_FILE,'r'):
     chunk,chroms=line.strip().split("\t")
     chrom_chunks[chunk]=chroms.replace(" ",",")
-chunks=list(chrom_chunks)
+CHUNKS=list(chrom_chunks)
 
 ## assign gpus to chunks
 ## make this more sophisticated and flexible in future
 gpus = int(config["gpus"])
-num_chunks=len(chunks)
-gpc=gpus//num_chunks #gpus per chunk
-chunk_gpus = { chunk : ','.join(map(str,range(i*gpc,(i+1)*gpc))) for i,chunk in enumerate(chunks)}
+N_CHUNKS=len(CHUNKS)
+gpc=gpus//N_CHUNKS #gpus per chunk
+chunk_gpus = { chunk : ','.join(map(str,range(i*gpc,(i+1)*gpc))) for i,chunk in enumerate(CHUNKS)}
 print("assigning chunks to following gpus: ")
 print(chunk_gpus)
 
@@ -43,10 +43,7 @@ print("Using %s gene list for variant prioritization" % GENE_LIST)
 
 rule all:
     input:
-        expand("{sample}/candidates/{sample}.snv_indel.candidate_variants.igv_report.{chunk}.html",sample=SAMPLE,chunk=chunks),
-        expand("{sample}/candidates/{sample}.sv.candidate_variants.igv_report.{chunk}.html",sample=SAMPLE,chunk=chunks),
-        expand("{sample}/candidates/{sample}.cnv.candidate_variants.igv_report.html",sample=SAMPLE)
-        ##expand("{sample}/candidates/{sample}.all_candidate_variants.igv_report.html",sample=SAMPLE)
+        expand("{sample}/candidates/{sample}.all_candidate_variants.igv_report.html",sample=SAMPLE)
 
 rule merge_bams:
     input:
@@ -64,12 +61,12 @@ rule chunk_bams:
     input:
         INPUT_BAM
     params:
-        num_chunks=len(chunks),
+        num_chunks=N_CHUNKS,
         chunks=CHUNK_FILE,
         prefix="{sample}/merged_bam/{sample}.merged"
     output:
-        bam=expand("{{sample}}/merged_bam/{{sample}}.merged.{chunk}.bam", chunk=chunks),
-        bai=expand("{{sample}}/merged_bam/{{sample}}.merged.{chunk}.bam.bai", chunk=chunks),
+        bam=expand("{{sample}}/merged_bam/{{sample}}.merged.{chunk}.bam", chunk=CHUNKS),
+        bai=expand("{{sample}}/merged_bam/{{sample}}.merged.{chunk}.bam.bai", chunk=CHUNKS),
     benchmark: "{sample}/benchmarks/chunk_bam.tsv"
     threads: 192
     conda: "envs/ultrarapid.yaml"
@@ -78,7 +75,6 @@ rule chunk_bams:
         while read -r CHUNK CHROMS; do
             samtools view -@ $threads_per_chunk -b {input} $CHROMS -o "{params.prefix}.$CHUNK.bam" && samtools index -@ $threads_per_chunk "{params.prefix}.$CHUNK.bam" &
         done < {params.chunks}
-        touch {output.bai}
         wait
     """
 
@@ -92,7 +88,7 @@ rule clair3:
         outdir="{sample}/clair3_out/{chunk}"
     output:
         "{sample}/clair3_out/{sample}.merge_output.PASS.{chunk}.vcf.gz"
-    threads: 42
+    threads: 160 // N_CHUNKS
     benchmark: "{sample}/benchmarks/clair3_{chunk}.tsv"
     #conda: "envs/ultrarapid.yaml"
     conda: "ultrarapid"
@@ -100,8 +96,8 @@ rule clair3:
         run_clair3.sh --bam_fn={input.bam} --ref_fn={input.ref} --threads={threads} \
 	 --platform=ont --model_path={params.model} --output={params.outdir} --use_longphase_for_intermediate_phasing \
 	 --min_coverage 4 --qual 10 {params.gpu_args}
-        bcftools view --threads 32 -f PASS -Oz -o {output} {params.outdir}/merge_output.vcf.gz
-        bcftools index --threads 32 -t {output}
+        bcftools view --threads {threads} -f PASS -Oz -o {output} {params.outdir}/merge_output.vcf.gz
+        bcftools index --threads {threads} -t {output}
     """
 
 rule sniffles:
@@ -111,7 +107,7 @@ rule sniffles:
         raw="{sample}/sniffles/{sample}.sniffles.{chunk}.vcf"
     output:
         "{sample}/sniffles/{sample}.sniffles.{chunk}.vcf.gz"
-    threads: 16
+    threads: 24 // N_CHUNKS
     benchmark: "{sample}/benchmarks/sniffles._{chunk}.tsv"
     conda: "envs/ultrarapid.yaml"
     shell: """ 
@@ -119,6 +115,31 @@ rule sniffles:
         bcftools sort -Oz -o {output} {params.raw}
         bcftools index --threads {threads} --tbi {output}
         rm -f {params.raw}
+    """
+
+rule merge_clair3_vcfs:
+    input:
+        expand("{{sample}}/clair3_out/{{sample}}.merge_output.PASS.{chunk}.vcf.gz", chunk=CHUNKS)
+    output:
+        "{sample}/clair3_out/{sample}.merge_output.PASS.vcf.gz"
+    threads: 4
+    conda: "envs/ultrarapid.yaml"
+    shell: """
+        bcftools concat -a -Ou {input} | bcftools sort -m 4G -Oz -o {output}
+        bcftools index --threads {threads} --tbi {output}
+    """
+
+
+rule merge_sniffles_vcfs:
+    input:
+        expand("{{sample}}/sniffles/{{sample}}.sniffles.{chunk}.vcf.gz", chunk=CHUNKS)
+    output:
+        "{sample}/sniffles/{sample}.sniffles.vcf.gz"
+    threads: 4
+    conda: "envs/ultrarapid.yaml"
+    shell: """
+        bcftools concat -a -Ou {input} | bcftools sort -m 4G -Oz -o {output}
+        bcftools index --threads {threads} --tbi {output}
     """
 
 rule cnvkit:
@@ -135,7 +156,7 @@ rule cnvkit:
     output:
         cnv="{sample}/cnvkit/{sample}.cnvkit.germline_autosomal_CNVs.called.bed",
         cov_bars="{sample}/cnvkit/{sample}.5kb_coverage_bars.bedgraph.gz"
-    threads: 32
+    threads: 24
     benchmark: "{sample}/benchmarks/cnvkit.tsv"
     conda: "envs/ultrarapid.yaml"
     shell: """
@@ -160,22 +181,22 @@ rule longphase:
     input:
         snv="{sample}/clair3_out/{sample}.merge_output.PASS.{chunk}.vcf.gz",
         sv="{sample}/sniffles/{sample}.sniffles.{chunk}.vcf.gz",
-        bam=INPUT_BAM,
+        bam="{sample}/merged_bam/{sample}.merged.{chunk}.bam",
         ref=REFERENCE
     params:
         prefix="{sample}/longphase/{sample}.phased.{chunk}"
     output:
         snv="{sample}/longphase/{sample}.phased.{chunk}.vcf.gz",
         sv="{sample}/longphase/{sample}.phased.{chunk}_SV.vcf.gz"
-    threads: 32
+    threads: 64 // N_CHUNKS
     benchmark: "{sample}/benchmarks/longphase_{chunk}.tsv"
     conda: "envs/ultrarapid.yaml"
     shell: """ 
         longphase phase -s {input.snv} --sv-file {input.sv} -b {input.bam} -r {input.ref} -t {threads} -o {params.prefix} --ont
         bcftools sort -m 4G -Oz -o {output.snv} {params.prefix}.vcf
-        bcftools index --threads 32 --tbi {output.snv}
+        bcftools index --threads {threads} --tbi {output.snv}
         bcftools sort -m 4G -Oz -o {output.sv} {params.prefix}_SV.vcf
-        bcftools index --threads 32 --tbi {output.sv}
+        bcftools index --threads {threads} --tbi {output.sv}
         rm -f {params.prefix}*.vcf 
     """
 
@@ -189,7 +210,7 @@ rule haplotag:
         prefix="{sample}/longphase/{sample}.haplotagged.{chunk}"
     output:
         "{sample}/longphase/{sample}.haplotagged.{chunk}.bam"
-    threads: 48
+    threads: 64 // N_CHUNKS
     benchmark: "{sample}/benchmarks/haplotag_{chunk}.tsv"
     conda: "envs/ultrarapid.yaml"
     shell: 
@@ -205,7 +226,7 @@ rule vep_snv:
         tmp_vcf="{sample}/vep/tmp.{sample}.vep.{chunk}.vcf"
     output:
         "{sample}/vep/{sample}.phased.vep.homo_anno.{chunk}.vcf.gz"
-    threads: 96
+    threads: 128 // N_CHUNKS
     benchmark: "{sample}/benchmarks/vep_{chunk}.tsv"
     conda: "envs/vep.yaml"
     shell: """ 
@@ -218,7 +239,7 @@ rule vep_snv:
           --check_existing --clin_sig_allele 1 --af_gnomade --af_gnomadg --max_af \
           --plugin "Phenotypes,file={params.cache}/phenotypes_116_GRCh38.gff.gz,include_types=Gene,include_sources=MIM_morbid,phenotype_feature=1,id_match=1,cols=source&phenotype&id" \
           --no_stats --force_overwrite
-        bcftools annotate --threads 32 -a  {params.homopolymers} -h <(printf '##INFO=<ID=HOMOPOLYMER,Number=1,Type=String,Description="Variant overlaps GIAB GRCh38 homopolymer region">\n') \
+        bcftools annotate --threads {threads} -a  {params.homopolymers} -h <(printf '##INFO=<ID=HOMOPOLYMER,Number=1,Type=String,Description="Variant overlaps GIAB GRCh38 homopolymer region">\n') \
             -c CHROM,FROM,TO,INFO/HOMOPOLYMER -Oz -o {output} {params.tmp_vcf}
         bcftools index --threads {threads} --tbi {output}
         rm -f {params.tmp_vcf}
@@ -237,7 +258,7 @@ rule sv_annotate:
         tmp_afs = "{sample}/sv_anno/tmp.{sample}.cds_overlap.svafotate.{chunk}.vcf"
     output:
         "{sample}/sv_anno/{sample}.phased_SV.svafotate.vep.{chunk}.vcf.gz"
-    threads: 16
+    threads: 32 // N_CHUNKS
     benchmark: "{sample}/benchmarks/svafotate_{chunk}.tsv"
     conda: "envs/vep.yaml"
     shell: """ 
@@ -267,8 +288,8 @@ rule snvindel_report:
         gene_list=GENE_LIST,
         igv_json="{sample}/candidates/tmp.{sample}.snvindel.igv_track.{chunk}.json"
     output:
-        tsv="{sample}/candidates/{sample}.snv_indel.candidate_variants.{chunk}.tsv",
-        html="{sample}/candidates/{sample}.snv_indel.candidate_variants.igv_report.{chunk}.html"
+        tsv=temp("{sample}/candidates/{sample}.snv_indel.candidate_variants.{chunk}.tsv"),
+        html=temp("{sample}/candidates/{sample}.snv_indel.candidate_variants.igv_report.{chunk}.html")
     threads: 1
     benchmark: "{sample}/benchmarks/snvindel_report_{chunk}.tsv"
     conda: "envs/igvreport.yaml"
@@ -298,8 +319,8 @@ rule sv_report:
         clinvar_cnv_igv=ANNOT_DIR + "/ClinVar_pathogenic_CNVs.largeCNVs.igv.bed.gz",
         igv_json="{sample}/candidates/tmp.{sample}.sv.igv_track.{chunk}.json"
     output:
-        tsv="{sample}/candidates/{sample}.sv.candidate_variants.{chunk}.tsv",
-        html="{sample}/candidates/{sample}.sv.candidate_variants.igv_report.{chunk}.html"
+        tsv=temp("{sample}/candidates/{sample}.sv.candidate_variants.{chunk}.tsv"),
+        html=temp("{sample}/candidates/{sample}.sv.candidate_variants.igv_report.{chunk}.html")
     threads: 1
     benchmark: "{sample}/benchmarks/sv_report_{chunk}.tsv"
     conda: "envs/igvreport.yaml"
@@ -321,7 +342,9 @@ rule sv_report:
 rule cnv_report:
     input:
         cnv="{sample}/cnvkit/{sample}.cnvkit.germline_autosomal_CNVs.called.bed",
-        cov_bars="{sample}/cnvkit/{sample}.5kb_coverage_bars.bedgraph.gz"
+        cov_bars="{sample}/cnvkit/{sample}.5kb_coverage_bars.bedgraph.gz",
+        snvs="{sample}/clair3_out/{sample}.merge_output.PASS.vcf.gz",
+        sniffles="{sample}/sniffles/{sample}.sniffles.vcf.gz"
     params:
         gene_list=GENE_LIST,
         clinvar_cnvs=ANNOT_DIR + "/nstd102_clinvar_pathogenic.GRCh38.bed.gz",
@@ -334,7 +357,7 @@ rule cnv_report:
         igv_json="{sample}/candidates/tmp.{sample}.cnvs.igv_track.json"
     output:
         tsv="{sample}/candidates/{sample}.cnv.candidate_variants.tsv",
-        html="{sample}/candidates/{sample}.cnv.candidate_variants.igv_report.html"
+        html=temp("{sample}/candidates/{sample}.cnv.candidate_variants.igv_report.html")
     threads: 1
     benchmark: "{sample}/benchmarks/cnvreport_w_snvs.txt"
     conda: "envs/igvreport.yaml"
@@ -348,8 +371,10 @@ rule cnv_report:
         YMAX=$(awk -v m="$MEDIAN" 'BEGIN{{print 10*int((2.2*m+9.999999)/10)}}')
         echo "Median=$MEDIAN  IGV_max=$YMAX"
         echo '[
-          {{"name":"CNVkit patient CNVs","type":"annotation","format":"bed","url": "{input.cnv}","displayMode":"EXPANDED","color": "rgb(34,139,94)"}},
+          {{"name":"CNVkit patient CNVs","type":"annotation","format":"bed","url": "{input.cnv}","displayMode":"EXPANDED","color":"rgb(34,139,94)"}},
           {{"name":"Mean read depth (5kb bins)","type":"wig","format":"bedgraph","url": "{input.cov_bars}","graphType":"bar","autoscale":false,"min":0,"max":'$YMAX',"color":"rgb(110,110,110)","height": 250}},
+          {{"name":"Sniffles structural variants","type":"variant","format":"vcf","url":"{input.sniffles}","displayMode":"EXPANDED"}},
+          {{"name":"Clair3 SNV/indels","type":"variant","format":"vcf","url":"{input.snvs}","displayMode":"EXPANDED"}}, 
           {{"name":"ClinVar pathogenic CNVs","type":"annotation","format":"bed","url":"{params.clinvar_cnv_igv}","displayMode":"SQUISHED","height":200}},
           {{"name": "DGV Gold Standard CNVs","type":"annotation","format":"bed","url":"{params.dgv_igv}","displayMode":"SQUISHED","height":100}},
           {{"name": "Collins et al. dosage-sensitive genes","type":"annotation","format": "bed","url":"{params.collins_igv}","displayMode":"EXPANDED"}}
@@ -360,16 +385,31 @@ rule cnv_report:
         rm -f {params.igv_json}
     """
 
-#rule combine_igv_reports:
-#    input:
-#        snv="{sample}/candidates/{sample}.snv_indel.candidate_variants.igv_report.html",
-#        sv="{sample}/candidates/{sample}.sv.candidate_variants.igv_report.html",
-#        cnv="{sample}/candidates/{sample}.cnv.candidate_variants.igv_report.html"
-#    output:
-#        "{sample}/candidates/{sample}.all_candidate_variants.igv_report.html"
-#    conda: "envs/igvreport.yaml"
-#    threads: 1
-#    benchmark: "{sample}/benchmarks/combine_reports.tsv"
-#    shell: """ 
-#        python scripts/combine_igv_reports.py --sample {wildcards.sample} --snv {input.snv} --sv {input.sv} --cnv {input.cnv} --output {output}
-#    """
+rule combine_chunked_igvreports:
+    input:
+        snv_html=expand("{{sample}}/candidates/{{sample}}.snv_indel.candidate_variants.igv_report.{chunk}.html", chunk=CHUNKS),
+        sv_html=expand("{{sample}}/candidates/{{sample}}.sv.candidate_variants.igv_report.{chunk}.html",chunk=CHUNKS),
+        snv_tsv=expand("{{sample}}/candidates/{{sample}}.snv_indel.candidate_variants.{chunk}.tsv",chunk=CHUNKS), 
+        sv_tsv=expand("{{sample}}/candidates/{{sample}}.sv.candidate_variants.{chunk}.tsv",chunk=CHUNKS),
+        cnv_html="{sample}/candidates/{sample}.cnv.candidate_variants.igv_report.html"
+    output:
+        html="{sample}/candidates/{sample}.all_candidate_variants.igv_report.html",
+        snv_tsv="{sample}/candidates/{sample}.snv_indel.candidate_variants.tsv",
+        sv_tsv="{sample}/candidates/{sample}.sv.candidate_variants.tsv"
+    benchmark:
+        "{sample}/benchmarks/combine_chunked_igvreports.tsv"
+    conda:
+        "envs/igvreport.yaml"
+    shell:
+        """
+        python scripts/combine_chunked_igvreports.py \
+            --sample {wildcards.sample} \
+            --snv-html {input.snv_html} \
+            --sv-html {input.sv_html} \
+            --snv-tsv {input.snv_tsv} \
+            --sv-tsv {input.sv_tsv} \
+            --cnv-html {input.cnv_html} \
+            --snv-tsv-output {output.snv_tsv} \
+            --sv-tsv-output {output.sv_tsv} \
+            --output {output.html}
+        """

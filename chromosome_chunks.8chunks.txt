@@ -1,0 +1,8 @@
+chunk1	chr1
+chunk2	chr2 chr14 chr15
+chunk3	chr3 chr13 chr20 chrY
+chunk4	chr4 chr12 chr19
+chunk5	chr5 chr11 chr18
+chunk6	chr6 chr10 chr17 chr22
+chunk7	chr7 chr9 chr16
+chunk8	chr8 chrX chr21
