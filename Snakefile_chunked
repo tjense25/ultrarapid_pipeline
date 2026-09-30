@@ -17,16 +17,17 @@ CLAIR3_MODELS = {
     ("r10", "sup"): "r1041_e82_400bps_sup_v500",
 }
 chrom_chunks={}
-CHUNK_FILE=conifg['chrom_chunk']
+CHUNK_FILE=config['chrom_chunk']
 for line in open(CHUNK_FILE,'r'):
     chunk,chroms=line.strip().split("\t")
     chrom_chunks[chunk]=chroms.replace(" ",",")
-chunks=list(chrom_chunks.keys())
+chunks=list(chrom_chunks)
 
 ## assign gpus to chunks
 ## make this more sophisticated and flexible in future
-chunks=len(chunks)
-gpc=gpus//chunks #gpus per chunk
+gpus = int(config["gpus"])
+num_chunks=len(chunks)
+gpc=gpus//num_chunks #gpus per chunk
 chunk_gpus = { chunk : ','.join(map(str,range(i*gpc,(i+1)*gpc))) for i,chunk in enumerate(chunks)}
 print("assigning chunks to following gpus: ")
 print(chunk_gpus)
@@ -44,8 +45,8 @@ rule all:
     input:
         expand("{sample}/candidates/{sample}.snv_indel.candidate_variants.igv_report.{chunk}.html",sample=SAMPLE,chunk=chunks),
         expand("{sample}/candidates/{sample}.sv.candidate_variants.igv_report.{chunk}.html",sample=SAMPLE,chunk=chunks),
-        expand("{sample}/candidates/{sample}.cnv.candidate_variants.igv_report.html")
-        #expand("{sample}/candidates/{sample}.all_candidate_variants.igv_report.html",sample=SAMPLE)
+        expand("{sample}/candidates/{sample}.cnv.candidate_variants.igv_report.html",sample=SAMPLE)
+        ##expand("{sample}/candidates/{sample}.all_candidate_variants.igv_report.html",sample=SAMPLE)
 
 rule merge_bams:
     input:
@@ -55,7 +56,7 @@ rule merge_bams:
         bai="{sample}/merged_bam/{sample}.merged.bam.bai"
     threads: 128
     conda: "envs/ultrarapid.yaml"
-    benchmark: "{sample}/benchmarks/merge.tsv"
+    benchmark: "{sample}/benchmarks/chunk_bam.tsv"
     shell:
         "samtools merge -@ {threads} -o {output.bam} {input} && samtools index -@ {threads} {output.bam}"
 
@@ -65,17 +66,19 @@ rule chunk_bams:
     params:
         num_chunks=len(chunks),
         chunks=CHUNK_FILE,
-        prefix="{sample}/mreged_bam/{sample}.merged"
+        prefix="{sample}/merged_bam/{sample}.merged"
     output:
-        expand("{{sample}}/merged_bam/{{sample}}.merged.{chunk}.bam", chunk=chunks)
-    benchmarks: "{sample}/benchmakrs/chunk_bam.tsv"
+        bam=expand("{{sample}}/merged_bam/{{sample}}.merged.{chunk}.bam", chunk=chunks),
+        bai=expand("{{sample}}/merged_bam/{{sample}}.merged.{chunk}.bam.bai", chunk=chunks),
+    benchmark: "{sample}/benchmarks/chunk_bam.tsv"
     threads: 192
     conda: "envs/ultrarapid.yaml"
     shell: """
         threads_per_chunk=$(({threads}/{params.num_chunks}))
         while read -r CHUNK CHROMS; do
-            samtools view -@ $threads_per_chunk -b {input.bam} $CHROMS -o {params.prefix}.${CHUNK}.bam && samtools index -@ $threads_per_chunk {params.prefix}.${CHUNK}.bam &
+            samtools view -@ $threads_per_chunk -b {input} $CHROMS -o "{params.prefix}.$CHUNK.bam" && samtools index -@ $threads_per_chunk "{params.prefix}.$CHUNK.bam" &
         done < {params.chunks}
+        touch {output.bai}
         wait
     """
 
@@ -85,20 +88,20 @@ rule clair3:
         ref=REFERENCE
     params:
         model=ANNOT_DIR+"/clair3_models/" + MODEL,
-        gpu_args=lambda w: "--use_gpu --device=cuda:" + chunk_gpus[w.chunk],
+        gpu_args=lambda w: "--use_gpu --device=cuda:"+ chunk_gpus[w.chunk] if gpc > 0 else "",
         outdir="{sample}/clair3_out/{chunk}"
     output:
         "{sample}/clair3_out/{sample}.merge_output.PASS.{chunk}.vcf.gz"
     threads: 42
     benchmark: "{sample}/benchmarks/clair3_{chunk}.tsv"
-    conda: "envs/ultrarapid.yaml"
+    #conda: "envs/ultrarapid.yaml"
+    conda: "ultrarapid"
     shell: """
-        run_clair3.sh --bam_fn={input.bam} --ref_fn={input.ref} \
-          --threads={threads} --platform=ont --model_path={params.model} \
-          --output={params.outdir} --use_longphase_for_intermediate_phasing --min_coverage 4 --qual 10 \
-          {params.gpu_args}
-        bcftools view --threads {threads} -f PASS -Oz -o {output} {params.outdir}/merge_output.vcf.gz
-        bcftools index --threads {threads} -t {output}
+        run_clair3.sh --bam_fn={input.bam} --ref_fn={input.ref} --threads={threads} \
+	 --platform=ont --model_path={params.model} --output={params.outdir} --use_longphase_for_intermediate_phasing \
+	 --min_coverage 4 --qual 10 {params.gpu_args}
+        bcftools view --threads 32 -f PASS -Oz -o {output} {params.outdir}/merge_output.vcf.gz
+        bcftools index --threads 32 -t {output}
     """
 
 rule sniffles:
@@ -180,7 +183,7 @@ rule haplotag:
     input:
         snv="{sample}/longphase/{sample}.phased.{chunk}.vcf.gz",
         sv="{sample}/longphase/{sample}.phased.{chunk}_SV.vcf.gz",
-        bam=INPUT_BAM,
+        bam="{sample}/merged_bam/{sample}.merged.{chunk}.bam",
         ref=REFERENCE
     params:
         prefix="{sample}/longphase/{sample}.haplotagged.{chunk}"
@@ -188,7 +191,7 @@ rule haplotag:
         "{sample}/longphase/{sample}.haplotagged.{chunk}.bam"
     threads: 48
     benchmark: "{sample}/benchmarks/haplotag_{chunk}.tsv"
-    conda: "env/ultrarapid.yaml"
+    conda: "envs/ultrarapid.yaml"
     shell: 
         "longphase haplotag -s {input.snv}  --sv-file {input.sv} -b {input.bam}  -r {input.ref}  -t {threads} -o {params.prefix} --tagSupplementary && samtools index -@ {threads} {output}"
 
@@ -204,7 +207,7 @@ rule vep_snv:
         "{sample}/vep/{sample}.phased.vep.homo_anno.{chunk}.vcf.gz"
     threads: 96
     benchmark: "{sample}/benchmarks/vep_{chunk}.tsv"
-    conda: "env/vep.yaml"
+    conda: "envs/vep.yaml"
     shell: """ 
         vep --input_file {input} --output_file {params.tmp_vcf} --check_existing \
           --format vcf --vcf --offline --compress_output bgzip --species homo_sapiens \
@@ -236,7 +239,7 @@ rule sv_annotate:
         "{sample}/sv_anno/{sample}.phased_SV.svafotate.vep.{chunk}.vcf.gz"
     threads: 16
     benchmark: "{sample}/benchmarks/svafotate_{chunk}.tsv"
-    conda: "env/vep.yaml"
+    conda: "envs/vep.yaml"
     shell: """ 
         #annotate with ONT SVs from UWONT500
         bcftools annotate --threads {threads} -a {params.MANE_CDS} -h <(echo '##INFO=<ID=MANE_CDS,Number=1,Type=String,Description="Overlaps MANE CDS">') \
@@ -268,7 +271,7 @@ rule snvindel_report:
         html="{sample}/candidates/{sample}.snv_indel.candidate_variants.igv_report.{chunk}.html"
     threads: 1
     benchmark: "{sample}/benchmarks/snvindel_report_{chunk}.tsv"
-    conda: "env/igvreport.yaml"
+    conda: "envs/igvreport.yaml"
     shell: """ 
         python3 scripts/filter_snv_candidates.py \
                 --input {input.vcf} \
@@ -299,7 +302,7 @@ rule sv_report:
         html="{sample}/candidates/{sample}.sv.candidate_variants.igv_report.{chunk}.html"
     threads: 1
     benchmark: "{sample}/benchmarks/sv_report_{chunk}.tsv"
-    conda: "env/igvreport.yaml"
+    conda: "envs/igvreport.yaml"
     shell: """ 
         python3 scripts/filter_sv_candidates.py {input.vcf} {params.gene_list} {params.clinvar_svs} {output.tsv}
         echo '[
@@ -334,7 +337,7 @@ rule cnv_report:
         html="{sample}/candidates/{sample}.cnv.candidate_variants.igv_report.html"
     threads: 1
     benchmark: "{sample}/benchmarks/cnvreport_w_snvs.txt"
-    conda: "env/igvreport.yaml"
+    conda: "envs/igvreport.yaml"
     shell: """
         python scripts/filter_cnv_candidates.py --cnv {input.cnv} \
 	 --clinvar {params.clinvar_cnvs} --dgv {params.dgv_cnvs} \
@@ -364,7 +367,7 @@ rule cnv_report:
 #        cnv="{sample}/candidates/{sample}.cnv.candidate_variants.igv_report.html"
 #    output:
 #        "{sample}/candidates/{sample}.all_candidate_variants.igv_report.html"
-#    conda: "env/igvreport.yaml"
+#    conda: "envs/igvreport.yaml"
 #    threads: 1
 #    benchmark: "{sample}/benchmarks/combine_reports.tsv"
 #    shell: """ 
