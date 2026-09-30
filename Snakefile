@@ -151,7 +151,7 @@ rule haplotag:
         "{sample}/longphase/{sample}.haplotagged.bam"
     threads: 48
     benchmark: "{sample}/benchmarks/haplotag.tsv"
-    conda: "env/ultrarapid.yaml"
+    conda: "envs/ultrarapid.yaml"
     shell: 
         "longphase haplotag -s {input.snv}  --sv-file {input.sv} -b {input.bam}  -r {input.ref}  -t {threads} -o {params.prefix} --tagSupplementary && samtools index -@ {threads} {output}"
 
@@ -167,7 +167,7 @@ rule vep_snv:
         "{sample}/vep/{sample}.phased.vep.homo_anno.vcf.gz"
     threads: 96
     benchmark: "{sample}/benchmarks/vep.tsv"
-    conda: "env/vep.yaml"
+    conda: "envs/vep.yaml"
     shell: """ 
         vep --input_file {input} --output_file {params.tmp_vcf} --check_existing \
           --format vcf --vcf --offline --compress_output bgzip --species homo_sapiens \
@@ -199,7 +199,7 @@ rule sv_annotate:
         "{sample}/sv_anno/{sample}.phased_SV.svafotate.vep.vcf.gz"
     threads: 16
     benchmark: "{sample}/benchmarks/svafotate.tsv"
-    conda: "env/vep.yaml"
+    conda: "envs/vep.yaml"
     shell: """ 
         #annotate with ONT SVs from UWONT500
         bcftools annotate --threads {threads} -a {params.MANE_CDS} -h <(echo '##INFO=<ID=MANE_CDS,Number=1,Type=String,Description="Overlaps MANE CDS">') \
@@ -231,7 +231,7 @@ rule snvindel_report:
         html="{sample}/candidates/{sample}.snv_indel.candidate_variants.igv_report.html"
     threads: 1
     benchmark: "{sample}/benchmarks/snvindel_report.tsv"
-    conda: "env/igvreport.yaml"
+    conda: "envs/igvreport.yaml"
     shell: """ 
         python3 scripts/filter_snv_candidates.py \
                 --input {input.vcf} \
@@ -262,7 +262,7 @@ rule sv_report:
         html="{sample}/candidates/{sample}.sv.candidate_variants.igv_report.html"
     threads: 1
     benchmark: "{sample}/benchmarks/sv_report.tsv"
-    conda: "env/igvreport.yaml"
+    conda: "envs/igvreport.yaml"
     shell: """ 
         python3 scripts/filter_sv_candidates.py {input.vcf} {params.gene_list} {params.clinvar_svs} {output.tsv}
         echo '[
@@ -298,7 +298,7 @@ rule cnv_report_no_snvs:
         html="{sample}/candidates/{sample}.cnv.candidate_variants.igv_report.no_snvs.html"
     threads: 1
     benchmark: "{sample}/benchmarks/cnvreport_w_snvs.txt"
-    conda: "env/igvreport.yaml"
+    conda: "envs/igvreport.yaml"
     shell: """
         python scripts/filter_cnv_candidates.py --cnv {input.cnv} \
 	 --clinvar {params.clinvar_cnvs} --dgv {params.dgv_cnvs} \
@@ -338,7 +338,7 @@ rule cnv_report:
         html="{sample}/candidates/{sample}.cnv.candidate_variants.igv_report.html"
     threads: 1
     benchmark: "{sample}/benchmarks/cnvreport.txt"
-    conda: "env/igvreport.yaml"
+    conda: "envs/igvreport.yaml"
     shell: """
         MEDIAN=$(zcat {input.cov_bars} | awk '$1!="chrX" && $1!="chrY" && $1!="chrM" && $1!="chrMT"{{print $4}}' | sort -n | awk '{{x[NR]=$1}} END{{print NR%2 ? x[(NR+1)/2] : (x[NR/2]+x[NR/2+1])/2}}') 
         YMAX=$(awk -v m="$MEDIAN" 'BEGIN{{print 10*int((2.2*m+9.999999)/10)}}')
@@ -365,7 +365,7 @@ rule combine_igv_reports:
         cnv="{sample}/candidates/{sample}.cnv.candidate_variants.igv_report.html"
     output:
         "{sample}/candidates/{sample}.all_candidate_variants.igv_report.html"
-    conda: "env/igvreport.yaml"
+    conda: "envs/igvreport.yaml"
     threads: 1
     benchmark: "{sample}/benchmarks/combine_reports.tsv"
     shell: """ 
